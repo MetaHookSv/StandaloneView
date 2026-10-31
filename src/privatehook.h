@@ -2,8 +2,8 @@
 
 namespace standaloneview
 {
-// ResolveGameSymbol / GetModuleCRC64 (API 109).
-constexpr int RequiredMetaHookAPIVersion = 109;
+// QueryGameSymbolStructMember (API 114).
+constexpr int RequiredMetaHookAPIVersion = 114;
 bool          InstallEngineHooks();
 void          UninstallEngineHooks();
 bool          InstallClientHooks(struct cl_exportfuncs_s* pExportFunc);

@@ -133,7 +133,18 @@ call only the view's callbacks.
   early while a view is current. Main-menu crashes without the hooks: `RenderPortals`
   dereferences map state; `ResetAll` calls glew pointers the client initializes only on
   map load (call to address 0 without Renderer; Renderer hooks `ResetAll` itself).
-  `HUD_VidInit` calls `ResetAll` unconditionally per map, so skipping it loses nothing.
+  The skipped `ResetAll` must still clear the one-shot studio/first-person byte
+  `ClientPortalManager.m_bStudioRenderPlayerPending`: the constructor leaves its
+  initialization to `ResetAll`, and Studio consumes it even at the menu. A garbage
+  true value takes a path that dereferences the absent local player. Only this
+  byte is initialized; do not run the native GL cleanup or zero the constructed
+  manager's containers.
+  `HUD_VidInit` calls the full native `ResetAll` unconditionally per map.
+  Query the member offset from the matched client module with
+  `QueryGameSymbolStructMember` (MetaHook API 114); do not resolve it as an
+  address or fall back to a fixed layout. Query it before installing either
+  portal hook, fail closed with module/build/CRC diagnostics on errors, and
+  clear the cached offset on client teardown so recapture queries it again.
 
 ## Lessons
 
