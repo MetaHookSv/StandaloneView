@@ -97,7 +97,11 @@ void Check(const char* label, int expected, int actual)
     }
 }
 
-int portalManager = 0;
+unsigned char          portalManager[1024] = {};
+uint32_t               portalMemberOffset  = 44;
+int                    memberQueries       = 0;
+mh_gamesymbol_status_t memberStatus        = MH_GAMESYMBOL_OK;
+constexpr const char*  PortalMemberSymbol  = "ClientPortalManager.m_bStudioRenderPlayerPending";
 // When set, the fake V_RenderView draws the client triangles like the engine.
 cl_exportfuncs_t* engineExports = nullptr;
 
@@ -225,6 +229,16 @@ mh_gamesymbol_status_t Resolve(PVOID base, const char* symbol, mh_gamesymbol_kin
     return MH_GAMESYMBOL_SYMBOL_NOT_FOUND;
 }
 
+mh_gamesymbol_status_t QueryStructMember(PVOID base, const char* symbol, uint32_t* offset)
+{
+    ++memberQueries;
+    Check("query real client base", 1, base == ClientBase());
+    Check("query portal studio member", 0, std::strcmp(symbol, PortalMemberSymbol));
+    if (memberStatus == MH_GAMESYMBOL_OK)
+        *offset = portalMemberOffset;
+    return memberStatus;
+}
+
 // Inside LoadEngine MetaHook defers inline hooks: the trampoline is written on commit.
 std::vector<std::pair<void**, void*>> pendingOriginals;
 
@@ -244,7 +258,11 @@ hook_t* InlineHook(void* address, void* replacement, void** original)
         Check("resolve every engine symbol before any engine installation", 1,
               engineResolves >= EngineSymbolCount && engineResolves % EngineSymbolCount == 0);
     else if (!lighting)
-        Check("resolve every client symbol before any client installation", 2, resolves - engineResolves);
+    {
+        const int clientResolves = resolves - engineResolves;
+        Check("resolve every client symbol before any client installation", 1, clientResolves > 0 && clientResolves % 2 == 0);
+        Check("query member before any portal hook installation", 1, memberQueries > 0);
+    }
     if (failInstall == installs)
         return nullptr;
     pendingOriginals.emplace_back(original, address);
@@ -309,6 +327,9 @@ void Reset()
     StandaloneViewManager().ClearViews();
     installs = resolves = engineResolves = failInstall = mainRenders = paints = portalRenders = portalResets = 0;
     svenClient                                                                                               = false;
+    portalMemberOffset                                                                                       = 44;
+    memberQueries                                                                                            = 0;
+    memberStatus                                                                                             = MH_GAMESYMBOL_OK;
     missingSymbol                                                                                            = nullptr;
     error[0]                                                                                                 = '\0';
     removed.clear();
@@ -401,15 +422,17 @@ void ClientExports()
     Check("uninstalled client hooks stop forwarding", 1, clientCalcs);
 }
 
-void SvenPortals()
+void SvenPortals(uint32_t offset)
 {
     Reset();
-    svenClient   = true;
-    auto exports = ClientExportTable();
+    portalMemberOffset = offset;
+    svenClient         = true;
+    auto exports       = ClientExportTable();
     Check("Sven client install succeeds", 1, standaloneview::InstallClientHooks(&exports));
     Check("Sven client hooks RenderPortals and ResetAll", 2, installs);
     Check("repeated Sven client install succeeds", 1, standaloneview::InstallClientHooks(&exports));
     Check("repeated Sven client install adds no hook", 2, installs);
+    Check("repeated client install reuses member query", 1, memberQueries);
     Check("engine install succeeds", 1, standaloneview::InstallEngineHooks());
     CommitHooks();
 
@@ -424,11 +447,14 @@ void SvenPortals()
     int extents[4] = {};
     portalRenders  = 0;
     portalResets   = 0;
+    std::memset(portalManager, 0xA5, sizeof(portalManager));
     hookedPaintBackground(extents);
     Check("view renders", 1, view.renders);
     Check("view pass and main view reach the engine", 2, mainRenders);
     Check("portals render only for the main view", 1, portalRenders);
     Check("portal manager resets only for the main view", 1, portalResets);
+    for (size_t i = 0; i < sizeof(portalManager); ++i)
+        Check("preview reset only clears the queried byte", i == portalMemberOffset ? 0 : 0xA5, portalManager[i]);
 
     const auto engineHooks = static_cast<int>(removed.size());
     standaloneview::UninstallClientHooks();
@@ -467,6 +493,34 @@ void ClientFailures()
     svenClient   = true;
     auto exports = ClientExportTable();
     Check("client install can retry after failure", 1, standaloneview::InstallClientHooks(&exports));
+}
+
+void PortalMemberFailures()
+{
+    for (const auto status : {MH_GAMESYMBOL_SYMBOL_NOT_FOUND, MH_GAMESYMBOL_KIND_MISMATCH, MH_GAMESYMBOL_GAMEDATA_UNAVAILABLE})
+    {
+        Reset();
+        svenClient   = true;
+        memberStatus = status;
+        auto exports = ClientExportTable();
+        Check("member failure rejects client hooks", 0, standaloneview::InstallClientHooks(&exports));
+        Check("member failure installs no hooks", 0, installs);
+        Check("member failure preserves exports", 1, exports.V_CalcRefdef == ClientCalcRefdef);
+        Check("member failure names member", 1, std::strstr(error, PortalMemberSymbol) != nullptr);
+        memberStatus = MH_GAMESYMBOL_OK;
+        Check("member query can retry", 1, standaloneview::InstallClientHooks(&exports));
+        Check("retry queries member again", 2, memberQueries);
+    }
+
+    Reset();
+    svenClient                                  = true;
+    g_pMetaHookAPI->QueryGameSymbolStructMember = nullptr;
+    auto exports                                = ClientExportTable();
+    Check("missing member API rejects client hooks", 0, standaloneview::InstallClientHooks(&exports));
+    Check("missing member API installs no hooks", 0, installs);
+    Check("missing member API preserves exports", 1, exports.V_CalcRefdef == ClientCalcRefdef);
+    Check("missing member API diagnostic", 1, std::strstr(error, "QueryGameSymbolStructMember unavailable") != nullptr);
+    g_pMetaHookAPI->QueryGameSymbolStructMember = QueryStructMember;
 }
 
 int StudioDrawModel(int flags)
@@ -1000,18 +1054,19 @@ void Failures()
 
 int main()
 {
-    metahook_api_t api            = {};
-    api.GetEngineBase             = EngineBase;
-    api.GetClientBase             = ClientBase;
-    api.GetClientFactory          = ClientFactory;
-    api.GetEngineBuildnum         = EngineBuild;
-    api.GetModuleCRC64            = CRC64;
-    api.GetGameSymbolStatusString = Status;
-    api.SysError                  = SysError;
-    api.ResolveGameSymbol         = Resolve;
-    api.InlineHook                = InlineHook;
-    api.UnHook                    = UnHook;
-    g_pMetaHookAPI                = &api;
+    metahook_api_t api              = {};
+    api.GetEngineBase               = EngineBase;
+    api.GetClientBase               = ClientBase;
+    api.GetClientFactory            = ClientFactory;
+    api.GetEngineBuildnum           = EngineBuild;
+    api.GetModuleCRC64              = CRC64;
+    api.GetGameSymbolStatusString   = Status;
+    api.SysError                    = SysError;
+    api.ResolveGameSymbol           = Resolve;
+    api.QueryGameSymbolStructMember = QueryStructMember;
+    api.InlineHook                  = InlineHook;
+    api.UnHook                      = UnHook;
+    g_pMetaHookAPI                  = &api;
 
     gEngfuncs.GetMaxClients        = GetMaxClients;
     gEngfuncs.GetEntityByIndex     = GetEntityByIndex;
@@ -1022,8 +1077,10 @@ int main()
     engineStudioApi.GetPlayerState = GetPlayerState;
     Success();
     ClientExports();
-    SvenPortals();
+    for (uint32_t offset : {0u, 44u, 488u, 700u})
+        SvenPortals(offset);
     ClientFailures();
+    PortalMemberFailures();
     EntityDraws();
     StudioPreviewPasses();
     StudioFallback();

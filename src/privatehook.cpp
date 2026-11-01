@@ -12,7 +12,7 @@
 #include "privatehook.h"
 
 static_assert(METAHOOK_API_VERSION >= standaloneview::RequiredMetaHookAPIVersion,
-              "StandaloneView requires gamedata resolution (MetaHook API 109)");
+              "StandaloneView requires struct-member gamedata (MetaHook API 114)");
 
 extern cl_enginefunc_t gEngfuncs;
 
@@ -54,6 +54,7 @@ void (*originalRenderView)()              = nullptr;
 PaintBackgroundFn originalPaintBackground = nullptr;
 RenderPortalsFn   originalRenderPortals   = nullptr;
 ResetAllFn        originalResetAll        = nullptr;
+uint32_t          portalStudioFlagOffset  = 0;
 
 struct GameModule
 {
@@ -90,6 +91,20 @@ bool Resolve(const GameModule& module, const char* symbol, mh_gamesymbol_kind_t 
     return false;
 }
 
+bool QueryStructMember(const GameModule& module, const char* symbol, uint32_t* offset)
+{
+    if (!g_pMetaHookAPI->QueryGameSymbolStructMember)
+    {
+        ReportFailure(module, symbol, "QueryGameSymbolStructMember unavailable");
+        return false;
+    }
+    const auto status = g_pMetaHookAPI->QueryGameSymbolStructMember(module.base, symbol, offset);
+    if (status == MH_GAMESYMBOL_OK)
+        return true;
+    ReportFailure(module, symbol, g_pMetaHookAPI->GetGameSymbolStatusString(status));
+    return false;
+}
+
 bool IsDemoPlayback()
 {
     return gEngfuncs.pDemoAPI && gEngfuncs.pDemoAPI->IsPlayingback() != 0;
@@ -122,14 +137,18 @@ void __fastcall RenderPortalsHook(void* pthis, int, ref_params_s* pparams)
     originalRenderPortals(pthis, 0, pparams);
 }
 
-// The client creates its portal manager on first use and resets it then, which needs
-// the client's GL entry points; the client initializes them only when a map loads. A
-// pass at the main menu may be that first use. HUD_VidInit resets the manager again
-// for every map, so a skipped reset loses nothing.
+// The client creates its portal manager on first use and resets it then. A menu
+// preview may be that first use, before the client's GL entry points are ready.
+// Preserve ResetAll's CPU-side studio flag initialization without calling its GL
+// cleanup. The member offset comes from this client's gamedata, never a fallback
+// layout. HUD_VidInit still performs the full native reset for every map.
 int __fastcall ResetAllHook(void* pthis, int)
 {
     if (StandaloneViewManager().GetCurrentView())
+    {
+        static_cast<unsigned char*>(pthis)[portalStudioFlagOffset] = 0;
         return 0;
+    }
     return originalResetAll(pthis, 0);
 }
 
@@ -145,8 +164,9 @@ void UninstallPortalHooks()
         g_pMetaHookAPI->UnHook(renderPortalsHook);
         renderPortalsHook = nullptr;
     }
-    originalResetAll      = nullptr;
-    originalRenderPortals = nullptr;
+    originalResetAll       = nullptr;
+    originalRenderPortals  = nullptr;
+    portalStudioFlagOffset = 0;
 }
 
 bool InstallPortalHooks()
@@ -154,8 +174,10 @@ bool InstallPortalHooks()
     const auto module               = ClientModule();
     void*      renderPortalsAddress = nullptr;
     void*      resetAllAddress      = nullptr;
+    uint32_t   studioFlagOffset     = 0;
     if (!Resolve(module, "ClientPortalManager_RenderPortals", MH_GAMESYMBOL_KIND_FUNCTION, &renderPortalsAddress) ||
-        !Resolve(module, "ClientPortalManager_ResetAll", MH_GAMESYMBOL_KIND_FUNCTION, &resetAllAddress))
+        !Resolve(module, "ClientPortalManager_ResetAll", MH_GAMESYMBOL_KIND_FUNCTION, &resetAllAddress) ||
+        !QueryStructMember(module, "ClientPortalManager.m_bStudioRenderPlayerPending", &studioFlagOffset))
         return false;
 
     renderPortalsHook = g_pMetaHookAPI->InlineHook(renderPortalsAddress, reinterpret_cast<void*>(RenderPortalsHook),
@@ -173,6 +195,7 @@ bool InstallPortalHooks()
         ReportFailure(module, "ClientPortalManager_ResetAll", "InlineHook failed");
         return false;
     }
+    portalStudioFlagOffset = studioFlagOffset;
     return true;
 }
 

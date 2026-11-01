@@ -37,7 +37,8 @@
       "symbols": {
         "client": {
           "ClientPortalManager_RenderPortals": "function",
-          "ClientPortalManager_ResetAll": "function"
+          "ClientPortalManager_ResetAll": "function",
+          "ClientPortalManager.m_bStudioRenderPlayerPending": "structMember"
         }
       }
     }

@@ -153,7 +153,9 @@ Renderer to skip its water pass for `onlyClientDraws` views, and
 Copy `StandaloneView.dll` to `<mod>/metahook/plugins/` and the complete
 `standaloneview` catalog directory to `<mod>/metahook/gamedata/standaloneview/`. Add
 `StandaloneView.dll` as the first entry of `<mod>/metahook/configs/plugins.lst`.
-MetaHook API 109 or newer is required.
+MetaHook API 114 or newer is required (`QueryGameSymbolStructMember`). Sven client
+gamedata must include `ClientPortalManager.m_bStudioRenderPlayerPending`; missing
+or incompatible member records fail initialization without a hardcoded fallback.
 
 The shipped catalog covers Half-Life builds 3248, 3266, 3329, 3647, 4554, 6153,
 8684, 10210; Sven Co-op builds 8948, 10257; and Cry of Fear build 5936. Unknown

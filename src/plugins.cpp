@@ -14,7 +14,7 @@ void IPluginsV4::Init(metahook_api_t* api, mh_interface_t* interfaces, mh_engine
     g_pInterface   = interfaces;
     g_pMetaSave    = save;
     if (interfaces->MetaHookAPIVersion < standaloneview::RequiredMetaHookAPIVersion)
-        api->SysError("[StandaloneView] MetaHook API 109 or newer is required.");
+        api->SysError("[StandaloneView] MetaHook API %d or newer is required.", standaloneview::RequiredMetaHookAPIVersion);
 }
 
 void IPluginsV4::LoadEngine(cl_enginefunc_t* engineFuncs)
